@@ -83,7 +83,7 @@ const (
 
 // Run runs forever until we are notified on stop channel
 func (nrc *NetworkRoutingController) Run(healthChan chan<- *ControllerHeartbeat, stopCh <-chan struct{}, wg *sync.WaitGroup) {
-	cidr, err := utils.GetPodCidrFromCniSpec("/etc/cni/net.d/10-kuberouter.conf")
+	cidr, err := utils.GetPodCidrFromCniSpec("/etc/cni/net.d/10-kuberouter.conflist")
 	if err != nil {
 		glog.Errorf("Failed to get pod CIDR from CNI conf file: %s", err.Error())
 	}
@@ -96,7 +96,7 @@ func (nrc *NetworkRoutingController) Run(healthChan chan<- *ControllerHeartbeat,
 	}
 
 	if len(cidr.IP) == 0 || strings.Compare(oldCidr, currentCidr) != 0 {
-		err = utils.InsertPodCidrInCniSpec("/etc/cni/net.d/10-kuberouter.conf", currentCidr)
+		err = utils.InsertPodCidrInCniSpec("/etc/cni/net.d/10-kuberouter.conflist", currentCidr)
 		if err != nil {
 			glog.Errorf("Failed to insert pod CIDR into CNI conf file: %s", err.Error())
 		}
