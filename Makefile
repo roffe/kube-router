@@ -49,11 +49,17 @@ multistage: ## Builds gobgp & kube-router in Docker
 
 kube-router:
 	@echo Starting kube-router binary build.
-	GOARCH=$(GOARCH) CGO_ENABLED=0 go build -ldflags '-X github.com/cloudnativelabs/kube-router/app.version=$(GIT_COMMIT) -X github.com/cloudnativelabs/kube-router/app.buildDate=$(BUILD_DATE)' -o kube-router kube-router.go
+	$(DOCKER) run -v $(PWD):/go/src/github.com/cloudnativelabs/kube-router -w /go/src/github.com/cloudnativelabs/kube-router golang:alpine \
+	    sh -c ' \
+		apk add -U git build-base linux-headers \
+	    && GOARCH=$(GOARCH) CGO_ENABLED=0 go build \
+		-ldflags "-X github.com/cloudnativelabs/kube-router/app.version=$(GIT_COMMIT) -X github.com/cloudnativelabs/kube-router/app.buildDate=$(BUILD_DATE)" \
+		-o kube-router kube-router.go'
 	@echo Finished kube-router binary build.
 
 test: gofmt gomoqs ## Runs code quality pipelines (gofmt, tests, coverage, lint, etc)
-	go test github.com/cloudnativelabs/kube-router github.com/cloudnativelabs/kube-router/app/... github.com/cloudnativelabs/kube-router/utils/
+	$(DOCKER) run -v $(PWD):/go/src/github.com/cloudnativelabs/kube-router -w /go/src/github.com/cloudnativelabs/kube-router golang:alpine \
+	    sh -c 'go test github.com/cloudnativelabs/kube-router github.com/cloudnativelabs/kube-router/app/... github.com/cloudnativelabs/kube-router/utils/'
 
 vagrant-up: export docker=$(DOCKER)
 vagrant-up: export DEV_IMG=$(REGISTRY_DEV):$(IMG_TAG)

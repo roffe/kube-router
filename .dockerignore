@@ -1,5 +1,6 @@
 .git
 **/_cache
+app
 build-image
 cni
 contrib
@@ -7,3 +8,5 @@ daemonset
 dashboard
 Documentation
 hack
+utils
+vendor
