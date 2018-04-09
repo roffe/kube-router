@@ -1,6 +1,7 @@
 NAME?=kube-router
 GOARCH?=amd64
 DEV_SUFFIX?=-git
+OSX=$(filter Darwin,$(shell uname))
 BUILD_DATE?=$(shell date +%Y-%m-%dT%H:%M:%S%z)
 LOCAL_PACKAGES?=app app/controllers app/options app/watchers utils
 IMG_NAMESPACE?=cloudnativelabs
@@ -10,9 +11,9 @@ IMG_TAG?=$(if $(IMG_TAG_PREFIX),$(IMG_TAG_PREFIX)-)$(if $(ARCH_TAG_PREFIX),$(ARC
 RELEASE_TAG?=$(shell build/get-git-tag.sh)
 REGISTRY?=$(if $(IMG_FQDN),$(IMG_FQDN)/$(IMG_NAMESPACE)/$(NAME),$(IMG_NAMESPACE)/$(NAME))
 REGISTRY_DEV?=$(REGISTRY)$(DEV_SUFFIX)
-IN_DOCKER_GROUP=$(filter staff docker,$(shell groups))
+IN_DOCKER_GROUP=$(filter docker,$(shell groups))
 IS_ROOT=$(filter 0,$(shell id -u))
-DOCKER=$(if $(or $(IN_DOCKER_GROUP),$(IS_ROOT)),docker,sudo docker)
+DOCKER=$(if $(or $(IN_DOCKER_GROUP),$(IS_ROOT),$(OSX)),docker,sudo docker)
 MAKEFILE_DIR=$(dir $(realpath $(firstword $(MAKEFILE_LIST))))
 UPSTREAM_IMPORT_PATH=$(GOPATH)/src/github.com/cloudnativelabs/kube-router/
 
