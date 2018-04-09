@@ -1,7 +1,7 @@
 NAME?=kube-router
 GOARCH?=amd64
 DEV_SUFFIX?=-git
-BUILD_DATE?=$(shell date --iso-8601)
+BUILD_DATE?=$(shell date +%Y-%m-%dT%H:%M:%S%z)
 LOCAL_PACKAGES?=app app/controllers app/options app/watchers utils
 IMG_NAMESPACE?=cloudnativelabs
 GIT_COMMIT=$(shell git describe --tags --dirty)
@@ -10,11 +10,12 @@ IMG_TAG?=$(if $(IMG_TAG_PREFIX),$(IMG_TAG_PREFIX)-)$(if $(ARCH_TAG_PREFIX),$(ARC
 RELEASE_TAG?=$(shell build/get-git-tag.sh)
 REGISTRY?=$(if $(IMG_FQDN),$(IMG_FQDN)/$(IMG_NAMESPACE)/$(NAME),$(IMG_NAMESPACE)/$(NAME))
 REGISTRY_DEV?=$(REGISTRY)$(DEV_SUFFIX)
-IN_DOCKER_GROUP=$(filter docker,$(shell groups))
+IN_DOCKER_GROUP=$(filter staff docker,$(shell groups))
 IS_ROOT=$(filter 0,$(shell id -u))
 DOCKER=$(if $(or $(IN_DOCKER_GROUP),$(IS_ROOT)),docker,sudo docker)
 MAKEFILE_DIR=$(dir $(realpath $(firstword $(MAKEFILE_LIST))))
 UPSTREAM_IMPORT_PATH=$(GOPATH)/src/github.com/cloudnativelabs/kube-router/
+PLATFORM := $(shell uname)
 
 ifeq ($(GOARCH), arm)
 QEMU_ARCH=arm
@@ -31,7 +32,21 @@ DOCKERFILE_SED_EXPR?=
 FILE_ARCH=x86-64
 endif
 $(info Building for GOARCH=$(GOARCH))
+
 all: test kube-router container ## Default target. Runs tests, builds binaries and images.
+
+multistage: ## Builds gobgp & kube-router in Docker
+	@echo Starting kube-router multistage image build
+	$(DOCKER) build -f Dockerfile.multistage \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--build-arg GOARCH=$(GOARCH) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
+		-t "$(REGISTRY_DEV):$(IMG_TAG)" \
+		.
+	@if [ "$(GIT_BRANCH)" = "master" ]; then \
+	    $(DOCKER) tag "$(REGISTRY_DEV):$(IMG_TAG)" "$(REGISTRY_DEV)"; \
+	fi
+	@echo Finished kube-router multistage image build
 
 kube-router:
 	@echo Starting kube-router binary build.

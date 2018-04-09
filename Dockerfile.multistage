@@ -1,0 +1,42 @@
+FROM golang:alpine as gobgp
+RUN apk add -U git
+ARG GOARCH
+COPY vendor /go/src
+RUN CGO_ENABLED=0 GOARCH=${GOARCH} go get github.com/osrg/gobgp/gobgp
+
+FROM golang:alpine AS kube-router
+ARG GIT_COMMIT
+ARG BUILD_DATE
+ARG GOARCH
+RUN mkdir -p /go/src/github.com/cloudnativelabs/kube-router
+WORKDIR /go/src/github.com/cloudnativelabs/kube-router
+COPY . .
+RUN apk add -U git build-base linux-headers \
+	&& go test github.com/cloudnativelabs/kube-router/app/... github.com/cloudnativelabs/kube-router/utils/ \
+	&& GOARCH=${GOARCH} CGO_ENABLED=0 go build -ldflags "-X github.com/cloudnativelabs/kube-router/app.version=${GIT_COMMIT} -X github.com/cloudnativelabs/kube-router/app.buildDate=${BUILD_DATE}" -o kube-router kube-router.go
+
+FROM alpine:3.7
+RUN apk add --no-cache \
+      iptables \
+      ipset \
+      iproute2 \
+      ipvsadm \
+      conntrack-tools \
+      curl \
+      bash && \
+    mkdir -p /var/lib/gobgp && \
+    mkdir -p /usr/local/share/bash-completion && \
+    curl -L -o /usr/local/share/bash-completion/bash-completion \
+        https://raw.githubusercontent.com/scop/bash-completion/master/bash_completion
+
+ADD build/image-assets/bashrc /root/.bashrc
+ADD build/image-assets/profile /root/.profile
+ADD build/image-assets/vimrc /root/.vimrc
+ADD build/image-assets/motd-kube-router.sh /etc/motd-kube-router.sh
+COPY --from=gobgp /go/bin/gobgp /usr/local/bin/
+COPY --from=kube-router /go/src/github.com/cloudnativelabs/kube-router/kube-router /usr/local/bin/
+RUN cd && \
+    /usr/local/bin/gobgp --gen-cmpl --bash-cmpl-file /var/lib/gobgp/gobgp-completion.bash
+
+WORKDIR "/root"
+ENTRYPOINT ["/usr/local/bin/kube-router"]
