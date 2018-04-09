@@ -31,7 +31,6 @@ DOCKERFILE_SED_EXPR?=
 FILE_ARCH=x86-64
 endif
 $(info Building for GOARCH=$(GOARCH))
-
 all: test kube-router container ## Default target. Runs tests, builds binaries and images.
 
 multistage: ## Builds gobgp & kube-router in Docker
