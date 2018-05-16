@@ -392,6 +392,7 @@ func (nrc *NetworkRoutingController) injectRoute(path *table.Path) error {
 				customRouteTableName, err.Error())
 		}
 		if !strings.Contains(string(out), tunnelName) {
+			glog.V(2).Infof("Adding route nexthop: %s dev: %s table: %d", nexthop.String(), tunnelName, customRouteTableID)
 			if out, err = exec.Command("ip", "route", "add", nexthop.String(), "dev", tunnelName, "table",
 				customRouteTableID).CombinedOutput(); err != nil {
 				return fmt.Errorf("failed to add route in custom route table, err: %s, output: %s", err, string(out))
