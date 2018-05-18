@@ -295,7 +295,14 @@ func (nrc *NetworkRoutingController) newNodeEventHandler() cache.ResourceEventHa
 // from old node
 func (nrc *NetworkRoutingController) OnNodeUpdate(obj interface{}) {
 	if !nrc.bgpServerStarted {
+		glog.V(2).Info("Skipped OnNodeUpdate due to BGP server not started")
 		return
+	}
+
+	// update export policies so that NeighborSet gets updated with new set of nodes
+	err := nrc.addExportPolicies()
+	if err != nil {
+		glog.Errorf("Error adding BGP export policies: %s", err.Error())
 	}
 
 	if nrc.bgpEnableInternal {

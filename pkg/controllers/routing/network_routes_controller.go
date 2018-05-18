@@ -392,7 +392,7 @@ func (nrc *NetworkRoutingController) injectRoute(path *table.Path) error {
 				customRouteTableName, err.Error())
 		}
 		if !strings.Contains(string(out), tunnelName) {
-			glog.V(2).Infof("Adding route nexthop: %s dev: %s table: %d", nexthop.String(), tunnelName, customRouteTableID)
+			glog.V(2).Infof("Adding route nexthop: %s dev: %s table: %s", nexthop.String(), tunnelName, customRouteTableID)
 			if out, err = exec.Command("ip", "route", "add", nexthop.String(), "dev", tunnelName, "table",
 				customRouteTableID).CombinedOutput(); err != nil {
 				return fmt.Errorf("failed to add route in custom route table, err: %s, output: %s", err, string(out))
@@ -405,11 +405,23 @@ func (nrc *NetworkRoutingController) injectRoute(path *table.Path) error {
 			Dst:       dst,
 			Protocol:  0x11,
 		}
+
+		//ip route add dst dev link.Attrs().Name proto kernel src nrc.nodeIP
+		glog.V(2).Infof("Adding route dst: %s dev: %s src: %s", dst.String(), link.Attrs().Name, nrc.nodeIP.String())
+		out, err = exec.Command("ip", "route", "replace", dst.String(), "dev", link.Attrs().Name, "proto", "17", "src", nrc.nodeIP.String()).CombinedOutput()
+		if err != nil {
+			glog.Errorf("Failed to add route dst: %s dev: %s src: %s err: %s", dst.String(), link.Attrs().Name, nrc.nodeIP.String(), out)
+		}
 	} else {
 		route = &netlink.Route{
 			Dst:      dst,
 			Gw:       nexthop,
 			Protocol: 0x11,
+		}
+		glog.V(2).Infof("Adding route dst: %s via: %s src: %s", dst.String(), nexthop.String())
+		out, err := exec.Command("ip", "route", "replace", dst.String(), "via", nexthop.String(), "proto", "17").CombinedOutput()
+		if err != nil {
+			glog.Errorf("Failed to add route dst: %s via: %s err: %s", dst.String(), nexthop.String(), out)
 		}
 	}
 
@@ -417,8 +429,12 @@ func (nrc *NetworkRoutingController) injectRoute(path *table.Path) error {
 		glog.V(2).Infof("Removing route: '%s via %s' from peer in the routing table", dst, nexthop)
 		return netlink.RouteDel(route)
 	}
-	glog.V(2).Infof("Inject route: '%s via %s' from peer to routing table", dst, nexthop)
-	return netlink.RouteReplace(route)
+
+	//glog.V(2).Infof("Inject route: '%s via %s' from peer to routing table", dst, nexthop)
+	//glog.Infof("Route: %+v\n", route)
+	//msg := netlink.RouteAdd(route)
+	//glog.Infof("Netlink: %+v\n", msg)
+	return nil
 }
 
 // Cleanup performs the cleanup of configurations done
