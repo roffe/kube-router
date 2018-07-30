@@ -70,18 +70,25 @@
   packages = [
     "libcni",
     "pkg/invoke",
-    "pkg/ip",
-    "pkg/ns",
     "pkg/types",
     "pkg/types/020",
     "pkg/types/current",
+    "pkg/version"
+  ]
+  revision = "6bfbb24df31b9ed3304187615c327de537e90360"
+  version = "v0.6.0"
+
+[[projects]]
+  name = "github.com/containernetworking/plugins"
+  packages = [
+    "pkg/ip",
+    "pkg/ns",
     "pkg/utils/hwaddr",
-    "pkg/version",
     "plugins/ipam/host-local/backend",
     "plugins/ipam/host-local/backend/allocator"
   ]
-  revision = "137b4975ecab6e1f0c24c1e3c228a50a3cfba75e"
-  version = "v0.5.2"
+  revision = "6323f8c28b297f8c237a01cf05784afb0ff56880"
+  version = "v0.7.0"
 
 [[projects]]
   name = "github.com/coreos/go-iptables"
@@ -569,10 +576,10 @@
   revision = "7c0cea34c8ece3fbeb2b27ab9b59511d360fb394"
 
 [[projects]]
+  branch = "master"
   name = "github.com/spf13/pflag"
   packages = ["."]
-  revision = "583c0c0531f06d5278b7d917446061adc344b5cd"
-  version = "v1.0.1"
+  revision = "3ebe029320b2676d667ae88da602a5f854788a8a"
 
 [[projects]]
   branch = "master"
@@ -938,6 +945,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "084480bb06f84e536badc385a76b5e179e27caacc83b769fc984bad231429698"
+  inputs-digest = "863a7588008873b33498a541d3d63d4cea8b93fd0fe22ad5da88351a36e04aa0"
   solver-name = "gps-cdcl"
   solver-version = 1
