@@ -52,6 +52,8 @@ const (
 	svcLocalAnnotation                = "kube-router.io/service.local"
 	bgpLocalAddressAnnotation         = "kube-router.io/bgp-local-addresses"
 	LeaderElectionRecordAnnotationKey = "control-plane.alpha.kubernetes.io/leader"
+
+	networkRouteControllerLabel = "NRC"
 )
 
 // NetworkRoutingController is struct to hold necessary information required by controller
@@ -119,7 +121,7 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 	glog.V(1).Info("Populating ipsets.")
 	err = nrc.syncNodeIPSets()
 	if err != nil {
-		metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+		metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 		glog.Errorf("Failed initial ipset setup: %s", err)
 	}
 
@@ -130,7 +132,7 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 	// enable IP forwarding for the packets coming in/out from the pods
 	err = nrc.enableForwarding()
 	if err != nil {
-		metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+		metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 		glog.Errorf("Failed to enable IP forwarding of traffic from pods: %s", err.Error())
 	}
 
@@ -140,7 +142,7 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 		glog.V(1).Info("Setting up overlay networking.")
 		err = nrc.enablePolicyBasedRouting()
 		if err != nil {
-			metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+			metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 			glog.Errorf("Failed to enable required policy based routing: %s", err.Error())
 		}
 	} else {
@@ -148,7 +150,7 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 		glog.V(1).Info("Cleaning up old overlay networking if needed.")
 		err = nrc.disablePolicyBasedRouting()
 		if err != nil {
-			metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+			metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 			glog.Errorf("Failed to disable policy based routing: %s", err.Error())
 		}
 	}
@@ -156,7 +158,7 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 	glog.V(1).Info("Performing cleanup of depreciated rules/ipsets (if needed).")
 	err = deleteBadPodEgressRules()
 	if err != nil {
-		metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+		metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 		glog.Errorf("Error cleaning up old/bad Pod egress rules: %s", err.Error())
 	}
 
@@ -166,7 +168,7 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 
 		err = createPodEgressRule()
 		if err != nil {
-			metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+			metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 			glog.Errorf("Error enabling Pod egress: %s", err.Error())
 		}
 	} else {
@@ -174,7 +176,7 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 
 		err = deletePodEgressRule()
 		if err != nil {
-			metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+			metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 			glog.Warningf("Error cleaning up Pod Egress related networking: %s", err)
 		}
 	}
@@ -182,7 +184,7 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 	// create 'kube-bridge' interface to which pods will be connected
 	_, err = netlink.LinkByName("kube-bridge")
 	if err != nil && err.Error() == IFACE_NOT_FOUND {
-		metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+		metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 		linkAttrs := netlink.NewLinkAttrs()
 		linkAttrs.Name = "kube-bridge"
 		bridge := &netlink.Bridge{LinkAttrs: linkAttrs}
@@ -191,12 +193,12 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 		}
 		kubeBridgeIf, err := netlink.LinkByName("kube-bridge")
 		if err != nil {
-			metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+			metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 			glog.Errorf("Failed to find created `kube-router` bridge due to %s. Will be created by CNI bridge plugin when pod is launched.", err.Error())
 		}
 		err = netlink.LinkSetUp(kubeBridgeIf)
 		if err != nil {
-			metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+			metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 			glog.Errorf("Failed to bring `kube-router` bridge up due to %s. Will be created by CNI bridge plugin at later point when pod is launched.", err.Error())
 		}
 	}
@@ -219,7 +221,7 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 	for {
 		err := nrc.startBgpServer()
 		if err != nil {
-			metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+			metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 			glog.Errorf("Failed to start node BGP server: %s", err)
 			select {
 			case <-stopCh:
@@ -252,7 +254,7 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 			glog.V(1).Info("Syncing ipsets")
 			err = nrc.syncNodeIPSets()
 			if err != nil {
-				metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+				metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 				glog.Errorf("Error synchronizing ipsets: %s", err.Error())
 			}
 		}
@@ -260,7 +262,7 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 		// advertise or withdraw IPs for the services to be reachable via host
 		toAdvertise, toWithdraw, err := nrc.getActiveVIPs()
 		if err != nil {
-			metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+			metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 			glog.Errorf("failed to get routes to advertise/withdraw %s", err)
 		}
 
@@ -271,13 +273,13 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 		glog.V(1).Info("Performing periodic sync of pod CIDR routes")
 		err = nrc.advertisePodRoute()
 		if err != nil {
-			metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+			metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 			glog.Errorf("Error advertising route: %s", err.Error())
 		}
 
 		err = nrc.addExportPolicies()
 		if err != nil {
-			metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+			metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 			glog.Errorf("Error adding BGP export policies: %s", err.Error())
 		}
 
@@ -286,7 +288,7 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 		}
 
 		if err == nil {
-			healthcheck.SendHeartBeat(nrc.healthChan, "NRC")
+			healthcheck.SendHeartBeat(nrc.healthChan, networkRouteControllerLabel)
 		} else {
 			glog.Errorf("Error during periodic sync in network routing controller. Error: " + err.Error())
 			glog.Errorf("Skipping sending heartbeat from network routing controller as periodic sync failed.")
@@ -304,7 +306,7 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 func (nrc *NetworkRoutingController) updateCNIConfig() {
 	cidr, err := utils.GetPodCidrFromCniSpec(nrc.cniConfFile)
 	if err != nil {
-		metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+		metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 		glog.Errorf("Failed to get pod CIDR from CNI conf file: %s", err)
 	}
 
@@ -316,14 +318,14 @@ func (nrc *NetworkRoutingController) updateCNIConfig() {
 
 	currentCidr, err := utils.GetPodCidrFromNodeSpec(nrc.clientset, nrc.hostnameOverride)
 	if err != nil {
-		metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+		metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 		glog.Fatalf("Failed to get pod CIDR from node spec. kube-router relies on kube-controller-manager to allocate pod CIDR for the node or an annotation `kube-router.io/pod-cidr`. Error: %v", err)
 	}
 
 	if len(cidr.IP) == 0 || strings.Compare(oldCidr, currentCidr) != 0 {
 		err = utils.InsertPodCidrInCniSpec(nrc.cniConfFile, currentCidr)
 		if err != nil {
-			metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+			metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 			glog.Fatalf("Failed to insert `subnet`(pod CIDR) into CNI conf file: %s", err.Error())
 		}
 	}
@@ -345,7 +347,7 @@ func (nrc *NetworkRoutingController) watchBgpUpdates() {
 						continue
 					}
 					if err := nrc.injectRoute(path); err != nil {
-						metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+						metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 						glog.Errorf("Failed to inject routes due to: " + err.Error())
 						continue
 					}
@@ -402,7 +404,7 @@ func (nrc *NetworkRoutingController) injectRoute(path *table.Path) error {
 			}
 			err = netlink.LinkDel(link)
 			if err != nil {
-				metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+				metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 				glog.Errorf("Failed to delete tunnel link for the node due to " + err.Error())
 			}
 			return nil
@@ -477,30 +479,30 @@ func (nrc *NetworkRoutingController) Cleanup() {
 	// Pod egress cleanup
 	err := deletePodEgressRule()
 	if err != nil {
-		metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+		metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 		glog.Warningf("Error deleting Pod egress iptable rule: %s", err.Error())
 	}
 
 	err = deleteBadPodEgressRules()
 	if err != nil {
-		metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+		metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 		glog.Warningf("Error deleting Pod egress iptable rule: %s", err.Error())
 	}
 
 	// delete all ipsets created by kube-router
 	ipset, err := utils.NewIPSet()
 	if err != nil {
-		metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+		metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 		glog.Errorf("Failed to clean up ipsets: " + err.Error())
 	}
 	err = ipset.Save()
 	if err != nil {
-		metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+		metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 		glog.Errorf("Failed to clean up ipsets: " + err.Error())
 	}
 	err = ipset.DestroyAllWithin()
 	if err != nil {
-		metrics.ControllerErrors.WithLabelValues("NRC").Inc()
+		metrics.ControllerErrors.WithLabelValues(networkRouteControllerLabel).Inc()
 		glog.Warningf("Error deleting ipset: %s", err.Error())
 	}
 }
