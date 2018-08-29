@@ -215,6 +215,8 @@ type NetworkServicesController struct {
 
 	ServiceEventHandler   cache.ResourceEventHandler
 	EndpointsEventHandler cache.ResourceEventHandler
+
+	healthChan chan<- *healthcheck.ControllerHeartbeat
 }
 
 // internal representation of kubernetes service
@@ -249,7 +251,7 @@ type endpointsInfo struct {
 type endpointsInfoMap map[string][]endpointsInfo
 
 // Run periodically sync ipvs configuration to reflect desired state of services and endpoints
-func (nsc *NetworkServicesController) Run(healthChan chan<- *healthcheck.ControllerHeartbeat, stopCh <-chan struct{}, wg *sync.WaitGroup) error {
+func (nsc *NetworkServicesController) Run(stopCh <-chan struct{}, wg *sync.WaitGroup) error {
 
 	t := time.NewTicker(nsc.syncPeriod)
 	defer t.Stop()
@@ -296,7 +298,7 @@ func (nsc *NetworkServicesController) Run(healthChan chan<- *healthcheck.Control
 			glog.Errorf("Error during periodic ipvs sync in network service controller. Error: " + err.Error())
 			glog.Errorf("Skipping sending heartbeat from network service controller as periodic sync failed.")
 		} else {
-			healthcheck.SendHeartBeat(healthChan, "NSC")
+			healthcheck.SendHeartBeat(nsc.healthChan, "NSC")
 		}
 		nsc.readyForUpdates = true
 		select {
@@ -318,11 +320,13 @@ func (nsc *NetworkServicesController) sync() error {
 	err = nsc.syncHairpinIptablesRules()
 	if err != nil {
 		glog.Errorf("Error syncing hairpin iptable rules: %s", err.Error())
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 	}
 
 	err = nsc.syncIpvsServices(nsc.serviceMap, nsc.endpointsMap)
 	if err != nil {
 		glog.Errorf("Error syncing IPVS services: %s", err.Error())
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return err
 	}
 
@@ -343,6 +347,7 @@ func (nsc *NetworkServicesController) publishMetrics(serviceInfoMap serviceInfoM
 	ipvsSvcs, err := nsc.ln.ipvsGetServices()
 	if err != nil {
 		return errors.New("Failed to list IPVS services: " + err.Error())
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 	}
 
 	glog.V(1).Info("Publishing IPVS metrics")
@@ -439,6 +444,7 @@ func (nsc *NetworkServicesController) OnServiceUpdate(obj interface{}) {
 	svc, ok := obj.(*api.Service)
 	if !ok {
 		glog.Error("could not convert service update object to *v1.Service")
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return
 	}
 
@@ -515,12 +521,14 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 
 	dummyVipInterface, err := nsc.ln.getKubeDummyInterface()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed creating dummy interface: " + err.Error())
 	}
 
 	glog.V(1).Infof("Setting up policy routing required for Direct Server Return functionality.")
 	err = nsc.ln.setupPolicyRoutingForDSR()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed setup PBR for DSR due to: " + err.Error())
 	}
 	glog.V(1).Infof("Custom routing table " + customDSRRouteTableName + " required for Direct Server Return is setup as expected.")
@@ -528,6 +536,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 	glog.V(1).Infof("Setting up custom route table required to add routes for external IP's.")
 	err = nsc.ln.setupRoutesForExternalIPForDSR(serviceInfoMap)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		glog.Errorf("Failed setup custom routing table required to add routes for external IP's due to: " + err.Error())
 		return errors.New("Failed setup custom routing table required to add routes for external IP's due to: " + err.Error())
 	}
@@ -538,6 +547,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 
 	ipvsSvcs, err = nsc.ln.ipvsGetServices()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed get list of IPVS services due to: " + err.Error())
 	}
 
@@ -570,6 +580,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 		ipvsClusterVipSvc, err := nsc.ln.ipvsAddService(ipvsSvcs, svc.clusterIP, protocol, uint16(svc.port), svc.sessionAffinity, svc.scheduler)
 		if err != nil {
 			glog.Errorf("Failed to create ipvs service for cluster ip: %s", err.Error())
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			continue
 		}
 		var clusterServiceId = generateIpPortId(svc.clusterIP.String(), svc.protocol, strconv.Itoa(svc.port))
@@ -587,11 +598,13 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 
 				if err != nil {
 					glog.Errorf("Could not get list of system addresses for ipvs services: %s", err.Error())
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 					continue
 				}
 
 				if len(addrs) == 0 {
 					glog.Errorf("No IP addresses returned for nodeport service creation!")
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 					continue
 				}
 
@@ -602,6 +615,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 					ipvsNodeportSvcs[i], err = nsc.ln.ipvsAddService(ipvsSvcs, addr.IP, protocol, uint16(svc.nodePort), svc.sessionAffinity, svc.scheduler)
 					if err != nil {
 						glog.Errorf("Failed to create ipvs service for node port due to: %s", err.Error())
+						metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 						continue
 					}
 
@@ -613,6 +627,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 				ipvsNodeportSvcs[0], err = nsc.ln.ipvsAddService(ipvsSvcs, nsc.nodeIP, protocol, uint16(svc.nodePort), svc.sessionAffinity, svc.scheduler)
 				if err != nil {
 					glog.Errorf("Failed to create ipvs service for node port due to: %s", err.Error())
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 					continue
 				}
 
@@ -649,6 +664,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 				err = setupMangleTableRule(externalIP, svc.protocol, strconv.Itoa(svc.port), externalIpServiceId)
 				if err != nil {
 					glog.Errorf("Failed to setup mangle table rule to FMWARD the traffic to external IP")
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 					continue
 				}
 
@@ -660,6 +676,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 				if err != nil {
 					glog.Errorf("Failed to setup ip rule to lookup traffic to external IP: %s through custom "+
 						"route table due to %s", externalIP, err.Error())
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 					continue
 				}
 			} else {
@@ -667,12 +684,14 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 				err := nsc.ln.ipAddrAdd(dummyVipInterface, externalIP, true)
 				if err != nil && err.Error() != IFACE_HAS_ADDR {
 					glog.Errorf("Failed to assign external ip %s to dummy interface %s due to %s", externalIP, KUBE_DUMMY_IF, err.Error())
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 				}
 
 				// create IPVS service for the service to be exposed through the external ip
 				ipvsExternalIPSvc, err := nsc.ln.ipvsAddService(ipvsSvcs, net.ParseIP(externalIP), protocol, uint16(svc.port), svc.sessionAffinity, svc.scheduler)
 				if err != nil {
 					glog.Errorf("Failed to create ipvs service for external ip: %s due to %s", externalIP, err.Error())
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 					continue
 				}
 				externalIpServices = append(externalIpServices, externalIPService{ipvsSvc: ipvsExternalIPSvc, externalIp: externalIP})
@@ -707,6 +726,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 
 			err := nsc.ln.ipvsAddServer(ipvsClusterVipSvc, &dst, svc.local, nsc.podCidr)
 			if err != nil {
+				metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 				glog.Errorf(err.Error())
 			}
 
@@ -719,6 +739,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 				for i := 0; i < len(ipvsNodeportSvcs); i++ {
 					err := nsc.ln.ipvsAddServer(ipvsNodeportSvcs[i], &dst, svc.local, nsc.podCidr)
 					if err != nil {
+						metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 						glog.Errorf(err.Error())
 					}
 
@@ -737,6 +758,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 				// add server to IPVS service
 				err := nsc.ln.ipvsAddServer(externalIpService.ipvsSvc, &dst, svc.local, nsc.podCidr)
 				if err != nil {
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 					glog.Errorf(err.Error())
 				}
 
@@ -762,6 +784,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 
 					err = nsc.ln.prepareEndpointForDsr(containerID, endpoint.ip, externalIpService.externalIp)
 					if err != nil {
+						metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 						glog.Errorf("Failed to prepare endpoint %s to do direct server return due to %s", endpoint.ip, err.Error())
 					}
 				}
@@ -791,6 +814,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 			glog.V(1).Infof("Found an IP %s which is no longer needed so cleaning up", addr.IP.String())
 			err := nsc.ln.ipAddrDel(dummyVipInterface, addr.IP.String())
 			if err != nil {
+				metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 				glog.Errorf("Failed to delete stale IP %s due to: %s",
 					addr.IP.String(), err.Error())
 				continue
@@ -803,6 +827,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 	ipvsSvcs, err = nsc.ln.ipvsGetServices()
 
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to list IPVS services: " + err.Error())
 	}
 	var protocol string
@@ -827,6 +852,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 				ipvsServiceString(ipvsSvc))
 			err := nsc.ln.ipvsDelService(ipvsSvc)
 			if err != nil {
+				metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 				glog.Errorf("Failed to delete stale IPVS service %s due to: %s",
 					ipvsServiceString(ipvsSvc), err.Error())
 				continue
@@ -849,6 +875,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 						ipvsDestinationString(dst), ipvsServiceString(ipvsSvc))
 					err := nsc.ln.ipvsDelDestination(ipvsSvc, dst)
 					if err != nil {
+						metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 						glog.Errorf("Failed to delete destination %s from ipvs service %s",
 							ipvsDestinationString(dst), ipvsServiceString(ipvsSvc))
 					}
@@ -857,6 +884,7 @@ func (nsc *NetworkServicesController) syncIpvsServices(serviceInfoMap serviceInf
 					if ipvsSvc.Protocol == syscall.IPPROTO_UDP {
 						out, err := exec.Command("conntrack", "-D", "--orig-dst", dst.Address.String(), "-p", "udp", "--dport", strconv.Itoa(int(dst.Port))).CombinedOutput()
 						if err != nil {
+							metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 							if matched := re.MatchString(string(out)); !matched {
 								glog.Error("Failed to delete conntrack entry for endpoint: " + dst.Address.String() + ":" + strconv.Itoa(int(dst.Port)) + " due to " + err.Error())
 							}
@@ -924,24 +952,28 @@ func (ln *linuxNetworking) prepareEndpointForDsr(containerId string, endpointIP 
 
 	dockerClient, err := client.NewEnvClient()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to get docker client due to " + err.Error())
 	}
 	defer dockerClient.Close()
 
 	containerSpec, err := dockerClient.ContainerInspect(context.Background(), containerId)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to get docker container spec due to " + err.Error())
 	}
 
 	pid := containerSpec.State.Pid
 	endpointNamespaceHandle, err := netns.GetFromPid(pid)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to get endpoint namespace due to " + err.Error())
 	}
 	defer endpointNamespaceHandle.Close()
 
 	err = netns.Set(endpointNamespaceHandle)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to enter to endpoint namespace due to " + err.Error())
 	}
 
@@ -955,6 +987,7 @@ func (ln *linuxNetworking) prepareEndpointForDsr(containerId string, endpointIP 
 	// create a ipip tunnel interface inside the endpoint container
 	tunIf, err := netlink.LinkByName(KUBE_TUNNEL_IF)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		if err.Error() != IFACE_NOT_FOUND {
 			netns.Set(hostNetworkNamespaceHandle)
 			activeNetworkNamespaceHandle, err = netns.Get()
@@ -970,6 +1003,7 @@ func (ln *linuxNetworking) prepareEndpointForDsr(containerId string, endpointIP 
 		}
 		err = netlink.LinkAdd(&ipTunLink)
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			netns.Set(hostNetworkNamespaceHandle)
 			activeNetworkNamespaceHandle, err = netns.Get()
 			glog.V(2).Infof("Current network namespace after revert namespace to host network namespace: " + activeNetworkNamespaceHandle.String())
@@ -983,9 +1017,11 @@ func (ln *linuxNetworking) prepareEndpointForDsr(containerId string, endpointIP 
 			time.Sleep(100 * time.Millisecond)
 			tunIf, err = netlink.LinkByName(KUBE_TUNNEL_IF)
 			if err == nil {
+				metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 				break
 			}
 			if err != nil && err.Error() == IFACE_NOT_FOUND {
+				metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 				continue
 				glog.V(3).Infof("Waiting for tunnel interface %s to come up in the pod, retrying", KUBE_TUNNEL_IF)
 			} else {
@@ -994,6 +1030,7 @@ func (ln *linuxNetworking) prepareEndpointForDsr(containerId string, endpointIP 
 		}
 
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			netns.Set(hostNetworkNamespaceHandle)
 			activeNetworkNamespaceHandle, err = netns.Get()
 			glog.V(2).Infof("Current network namespace after revert namespace to host network namespace: " + activeNetworkNamespaceHandle.String())
@@ -1007,6 +1044,7 @@ func (ln *linuxNetworking) prepareEndpointForDsr(containerId string, endpointIP 
 	// bring the tunnel interface up
 	err = netlink.LinkSetUp(tunIf)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		netns.Set(hostNetworkNamespaceHandle)
 		activeNetworkNamespaceHandle, err = netns.Get()
 		glog.Infof("Current network namespace after revert namespace to host network namespace: " + activeNetworkNamespaceHandle.String())
@@ -1017,6 +1055,7 @@ func (ln *linuxNetworking) prepareEndpointForDsr(containerId string, endpointIP 
 	// assign VIP to the KUBE_TUNNEL_IF interface
 	err = ln.ipAddrAdd(tunIf, vip, false)
 	if err != nil && err.Error() != IFACE_HAS_ADDR {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		netns.Set(hostNetworkNamespaceHandle)
 		activeNetworkNamespaceHandle, err = netns.Get()
 		glog.V(2).Infof("Current network namespace after revert namespace to host network namespace: " + activeNetworkNamespaceHandle.String())
@@ -1028,6 +1067,7 @@ func (ln *linuxNetworking) prepareEndpointForDsr(containerId string, endpointIP 
 	// disable rp_filter on all interface
 	err = ioutil.WriteFile("/proc/sys/net/ipv4/conf/kube-tunnel-if/rp_filter", []byte(strconv.Itoa(0)), 0640)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		netns.Set(hostNetworkNamespaceHandle)
 		activeNetworkNamespaceHandle, err = netns.Get()
 		glog.Infof("Current network namespace after revert namespace to host network namespace: " + activeNetworkNamespaceHandle.String())
@@ -1037,6 +1077,7 @@ func (ln *linuxNetworking) prepareEndpointForDsr(containerId string, endpointIP 
 
 	err = ioutil.WriteFile("/proc/sys/net/ipv4/conf/eth0/rp_filter", []byte(strconv.Itoa(0)), 0640)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		netns.Set(hostNetworkNamespaceHandle)
 		activeNetworkNamespaceHandle, err = netns.Get()
 		glog.Infof("Current network namespace after revert namespace to host network namespace: " + activeNetworkNamespaceHandle.String())
@@ -1046,6 +1087,7 @@ func (ln *linuxNetworking) prepareEndpointForDsr(containerId string, endpointIP 
 
 	err = ioutil.WriteFile("/proc/sys/net/ipv4/conf/all/rp_filter", []byte(strconv.Itoa(0)), 0640)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		netns.Set(hostNetworkNamespaceHandle)
 		activeNetworkNamespaceHandle, err = netns.Get()
 		glog.V(2).Infof("Current network namespace after revert namespace to host network namespace: " + activeNetworkNamespaceHandle.String())
@@ -1224,6 +1266,7 @@ func (nsc *NetworkServicesController) syncHairpinIptablesRules() error {
 
 	iptablesCmdHandler, err := iptables.New()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to initialize iptables executor" + err.Error())
 	}
 
@@ -1234,6 +1277,7 @@ func (nsc *NetworkServicesController) syncHairpinIptablesRules() error {
 	// TODO: Factor out this code
 	chains, err := iptablesCmdHandler.ListChains("nat")
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to list iptables chains: " + err.Error())
 	}
 
@@ -1248,6 +1292,7 @@ func (nsc *NetworkServicesController) syncHairpinIptablesRules() error {
 	if hasHairpinChain != true {
 		err = iptablesCmdHandler.NewChain("nat", hairpinChain)
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			return errors.New("Failed to create iptables chain \"" + hairpinChain +
 				"\": " + err.Error())
 		}
@@ -1258,6 +1303,7 @@ func (nsc *NetworkServicesController) syncHairpinIptablesRules() error {
 	jumpArgs := []string{"-m", "ipvs", "--vdir", "ORIGINAL", "-j", hairpinChain}
 	err = iptablesCmdHandler.AppendUnique("nat", "POSTROUTING", jumpArgs...)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to add hairpin iptables jump rule: %s" + err.Error())
 	}
 
@@ -1271,6 +1317,7 @@ func (nsc *NetworkServicesController) syncHairpinIptablesRules() error {
 
 	rulesFromNode, err := iptablesCmdHandler.List("nat", hairpinChain)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to get rules from iptables chain \"" +
 			hairpinChain + "\": " + err.Error())
 	}
@@ -1321,12 +1368,14 @@ func hairpinRuleFrom(serviceIP string, endpointIP string, servicePort int) (stri
 func deleteHairpinIptablesRules() error {
 	iptablesCmdHandler, err := iptables.New()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to initialize iptables executor" + err.Error())
 	}
 
 	// TODO: Factor out this code
 	chains, err := iptablesCmdHandler.ListChains("nat")
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to list iptables chains: " + err.Error())
 	}
 
@@ -1351,6 +1400,7 @@ func deleteHairpinIptablesRules() error {
 	jumpArgs := []string{"-m", "ipvs", "--vdir", "ORIGINAL", "-j", hairpinChain}
 	hasHairpinJumpRule, err := iptablesCmdHandler.Exists("nat", "POSTROUTING", jumpArgs...)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to search POSTROUTING iptable rules: " + err.Error())
 	}
 
@@ -1358,6 +1408,7 @@ func deleteHairpinIptablesRules() error {
 	if hasHairpinJumpRule {
 		err = iptablesCmdHandler.Delete("nat", "POSTROUTING", jumpArgs...)
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			glog.Errorf("Unable to delete hairpin jump rule from chain \"POSTROUTING\": %e", err)
 		} else {
 			glog.V(1).Info("Deleted hairpin jump rule from chain \"POSTROUTING\"")
@@ -1367,11 +1418,13 @@ func deleteHairpinIptablesRules() error {
 	// Flush and delete the chain for hairpin rules
 	err = iptablesCmdHandler.ClearChain("nat", hairpinChain)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to flush iptables chain \"" + hairpinChain +
 			"\": " + err.Error())
 	}
 	err = iptablesCmdHandler.DeleteChain("nat", hairpinChain)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to delete iptables chain \"" + hairpinChain +
 			"\": " + err.Error())
 	}
@@ -1393,16 +1446,19 @@ func ensureIpvsQuiescentTemplate() error {
 func deleteMasqueradeIptablesRule() error {
 	iptablesCmdHandler, err := iptables.New()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to initialize iptables executor" + err.Error())
 	}
 	postRoutingChainRules, err := iptablesCmdHandler.List("nat", "POSTROUTING")
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to list iptable rules in POSTROUTING chain in nat table" + err.Error())
 	}
 	for i, rule := range postRoutingChainRules {
 		if strings.Contains(rule, "ipvs") && strings.Contains(rule, "MASQUERADE") {
 			err = iptablesCmdHandler.Delete("nat", "POSTROUTING", strconv.Itoa(i))
 			if err != nil {
+				metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 				return errors.New("Failed to run iptables command" + err.Error())
 			}
 			glog.V(2).Infof("Deleted iptables masquerade rule: %s", rule)
@@ -1466,6 +1522,7 @@ func (ln *linuxNetworking) ipvsAddService(svcs []*ipvs.Service, vip net.IP, prot
 
 				err = ln.ipvsUpdateService(svc)
 				if err != nil {
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 					return nil, err
 				}
 				glog.V(2).Infof("Updated persistence/session-affinity for service: %s", ipvsServiceString(svc))
@@ -1475,6 +1532,7 @@ func (ln *linuxNetworking) ipvsAddService(svcs []*ipvs.Service, vip net.IP, prot
 				svc.SchedName = scheduler
 				err = ln.ipvsUpdateService(svc)
 				if err != nil {
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 					return nil, errors.New("Failed to update the scheduler for the service due to " + err.Error())
 				}
 				glog.V(2).Infof("Updated schedule for the service: %s", ipvsServiceString(svc))
@@ -1499,6 +1557,7 @@ func (ln *linuxNetworking) ipvsAddService(svcs []*ipvs.Service, vip net.IP, prot
 
 	err = ln.ipvsNewService(&svc)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return nil, err
 	}
 	glog.V(1).Infof("Successfully added service: %s", ipvsServiceString(&svc))
@@ -1532,6 +1591,7 @@ func (ln *linuxNetworking) ipvsAddFWMarkService(vip net.IP, protocol, port uint1
 
 	svcs, err := ln.ipvsGetServices()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return nil, err
 	}
 
@@ -1542,6 +1602,7 @@ func (ln *linuxNetworking) ipvsAddFWMarkService(vip net.IP, protocol, port uint1
 
 				err = ln.ipvsUpdateService(svc)
 				if err != nil {
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 					return nil, err
 				}
 				glog.V(2).Infof("Updated persistence/session-affinity for service: %s", ipvsServiceString(svc))
@@ -1551,6 +1612,7 @@ func (ln *linuxNetworking) ipvsAddFWMarkService(vip net.IP, protocol, port uint1
 				svc.SchedName = scheduler
 				err = ln.ipvsUpdateService(svc)
 				if err != nil {
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 					return nil, errors.New("Failed to update the scheduler for the service due to " + err.Error())
 				}
 				glog.V(2).Infof("Updated schedule for the service: %s", ipvsServiceString(svc))
@@ -1575,6 +1637,7 @@ func (ln *linuxNetworking) ipvsAddFWMarkService(vip net.IP, protocol, port uint1
 
 	err = ln.ipvsNewService(&svc)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return nil, err
 	}
 	glog.Infof("Successfully added service: %s", ipvsServiceString(&svc))
@@ -1586,6 +1649,7 @@ func (ln *linuxNetworking) ipvsAddServer(service *ipvs.Service, dest *ipvs.Desti
 	if local {
 		_, ipnet, err := net.ParseCIDR(podCidr)
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			glog.Infof("Failed to ParseCIDR %s for adding destination %s to the service %s",
 				podCidr, ipvsDestinationString(dest), ipvsServiceString(service))
 			return nil
@@ -1605,6 +1669,7 @@ func (ln *linuxNetworking) ipvsAddServer(service *ipvs.Service, dest *ipvs.Desti
 	if strings.Contains(err.Error(), IPVS_SERVER_EXISTS) {
 		err = ln.ipvsUpdateDestination(service, dest)
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			return fmt.Errorf("Failed to update ipvs destination %s to the ipvs service %s due to : %s",
 				ipvsDestinationString(dest), ipvsServiceString(service), err.Error())
 		}
@@ -1629,11 +1694,13 @@ const (
 func setupMangleTableRule(ip string, protocol string, port string, fwmark string) error {
 	iptablesCmdHandler, err := iptables.New()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to initialize iptables executor" + err.Error())
 	}
 	args := []string{"-d", ip, "-m", protocol, "-p", protocol, "--dport", port, "-j", "MARK", "--set-mark", fwmark}
 	err = iptablesCmdHandler.AppendUnique("mangle", "PREROUTING", args...)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to run iptables command to set up FWMARK due to " + err.Error())
 	}
 	return nil
@@ -1652,6 +1719,7 @@ func (ln *linuxNetworking) cleanupMangleTableRule(ip string, protocol string, po
 	if exists {
 		err = iptablesCmdHandler.Delete("mangle", "PREROUTING", args...)
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			return errors.New("Failed to cleanup iptables command to set up FWMARK due to " + err.Error())
 		}
 	}
@@ -1665,11 +1733,13 @@ func (ln *linuxNetworking) cleanupMangleTableRule(ip string, protocol string, po
 func routeVIPTrafficToDirector(fwmark string) error {
 	out, err := exec.Command("ip", "rule", "list").Output()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to verify if `ip rule` exists due to: " + err.Error())
 	}
 	if !strings.Contains(string(out), fwmark) {
 		err = exec.Command("ip", "rule", "add", "prio", "32764", "fwmark", fwmark, "table", customDSRRouteTableID).Run()
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			return errors.New("Failed to add policy rule to lookup traffic to VIP through the custom " +
 				" routing table due to " + err.Error())
 		}
@@ -1683,12 +1753,14 @@ func routeVIPTrafficToDirector(fwmark string) error {
 func (ln *linuxNetworking) setupPolicyRoutingForDSR() error {
 	b, err := ioutil.ReadFile("/etc/iproute2/rt_tables")
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to setup policy routing required for DSR due to " + err.Error())
 	}
 
 	if !strings.Contains(string(b), customDSRRouteTableName) {
 		f, err := os.OpenFile("/etc/iproute2/rt_tables", os.O_APPEND|os.O_WRONLY, 0600)
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			return errors.New("Failed to setup policy routing required for DSR due to " + err.Error())
 		}
 		defer f.Close()
@@ -1698,12 +1770,14 @@ func (ln *linuxNetworking) setupPolicyRoutingForDSR() error {
 	}
 	out, err := exec.Command("ip", "route", "list", "table", customDSRRouteTableID).Output()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to verify required default route exists. " +
 			"Failed to setup policy routing required for DSR due to " + err.Error())
 	}
 	if !strings.Contains(string(out), " lo ") {
 		if err = exec.Command("ip", "route", "add", "local", "default", "dev", "lo", "table",
 			customDSRRouteTableID).Run(); err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			return errors.New("Failed to add route in custom route table due to: " + err.Error())
 		}
 	}
@@ -1718,34 +1792,40 @@ func (ln *linuxNetworking) setupPolicyRoutingForDSR() error {
 func (ln *linuxNetworking) setupRoutesForExternalIPForDSR(serviceInfoMap serviceInfoMap) error {
 	b, err := ioutil.ReadFile("/etc/iproute2/rt_tables")
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to setup external ip routing table required for DSR due to " + err.Error())
 	}
 
 	if !strings.Contains(string(b), externalIPRouteTableName) {
 		f, err := os.OpenFile("/etc/iproute2/rt_tables", os.O_APPEND|os.O_WRONLY, 0600)
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			return errors.New("Failed setup external ip routing table required for DSR due to " + err.Error())
 		}
 		defer f.Close()
 		if _, err = f.WriteString(externalIPRouteTableId + " " + externalIPRouteTableName + "\n"); err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			return errors.New("Failed setup external ip routing table required for DSR due to " + err.Error())
 		}
 	}
 
 	_, err = exec.Command("ip", "route", "list", "table", externalIPRouteTableId).Output()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to verify required routing table for external IP's exists. " +
 			"Failed to setup policy routing required for DSR due to " + err.Error())
 	}
 
 	out, err := exec.Command("ip", "rule", "list").Output()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to verify if `ip rule add prio 32765 from all lookup external_ip` exists due to: " + err.Error())
 	}
 
 	if !(strings.Contains(string(out), externalIPRouteTableName) || strings.Contains(string(out), externalIPRouteTableId)) {
 		err = exec.Command("ip", "rule", "add", "prio", "32765", "from", "all", "lookup", externalIPRouteTableId).Run()
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			glog.Infof("Failed to add policy rule `ip rule add prio 32765 from all lookup external_ip` due to " + err.Error())
 			return errors.New("Failed to add policy rule `ip rule add prio 32765 from all lookup external_ip` due to " + err.Error())
 		}
@@ -1753,6 +1833,7 @@ func (ln *linuxNetworking) setupRoutesForExternalIPForDSR(serviceInfoMap service
 
 	out, err = exec.Command("ip", "route", "list", "table", externalIPRouteTableId).Output()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return errors.New("Failed to get routes in external_ip table due to: " + err.Error())
 	}
 	outStr := string(out)
@@ -1769,6 +1850,7 @@ func (ln *linuxNetworking) setupRoutesForExternalIPForDSR(serviceInfoMap service
 			if !strings.Contains(outStr, externalIP) {
 				if err = exec.Command("ip", "route", "add", externalIP, "dev", "kube-bridge", "table",
 					externalIPRouteTableId).Run(); err != nil {
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 					glog.Error("Failed to add route for " + externalIP + " in custom route table for external IP's due to: " + err.Error())
 					continue
 				}
@@ -1786,6 +1868,7 @@ func (ln *linuxNetworking) setupRoutesForExternalIPForDSR(serviceInfoMap service
 				args := []string{"route", "del", "table", externalIPRouteTableId}
 				args = append(args, route...)
 				if err = exec.Command("ip", args...).Run(); err != nil {
+					metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 					glog.Errorf("Failed to del route for %v in custom route table for external IP's due to: %s", ip, err)
 					continue
 				}
@@ -1815,6 +1898,7 @@ func generateIpPortId(ip, protocol, port string) string {
 func getAllLocalIPs() ([]netlink.Addr, error) {
 	links, err := netlink.LinkList()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return nil, errors.New("Could not load list of net interfaces: " + err.Error())
 	}
 
@@ -1832,6 +1916,7 @@ func getAllLocalIPs() ([]netlink.Addr, error) {
 
 		linkAddrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			return nil, errors.New("Failed to get IPs for interface: " + err.Error())
 		}
 
@@ -1845,14 +1930,17 @@ func (ln *linuxNetworking) getKubeDummyInterface() (netlink.Link, error) {
 	var dummyVipInterface netlink.Link
 	dummyVipInterface, err := netlink.LinkByName(KUBE_DUMMY_IF)
 	if err != nil && err.Error() == IFACE_NOT_FOUND {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		glog.V(1).Infof("Could not find dummy interface: " + KUBE_DUMMY_IF + " to assign cluster ip's, creating one")
 		err = netlink.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: KUBE_DUMMY_IF}})
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			return nil, errors.New("Failed to add dummy interface:  " + err.Error())
 		}
 		dummyVipInterface, err = netlink.LinkByName(KUBE_DUMMY_IF)
 		err = netlink.LinkSetUp(dummyVipInterface)
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			return nil, errors.New("Failed to bring dummy interface up: " + err.Error())
 		}
 	}
@@ -1866,6 +1954,7 @@ func (nsc *NetworkServicesController) Cleanup() {
 
 	handle, err := ipvs.New("")
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		glog.Errorf("Failed to cleanup ipvs rules: %s", err.Error())
 		return
 	}
@@ -1875,6 +1964,7 @@ func (nsc *NetworkServicesController) Cleanup() {
 	// cleanup iptable masquerad rule
 	err = deleteMasqueradeIptablesRule()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		glog.Errorf("Failed to cleanup iptable masquerade rule due to: %s", err.Error())
 		return
 	}
@@ -1882,6 +1972,7 @@ func (nsc *NetworkServicesController) Cleanup() {
 	// cleanup iptable hairpin rules
 	err = deleteHairpinIptablesRules()
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		glog.Errorf("Failed to cleanup iptable hairpin rules: %s", err.Error())
 		return
 	}
@@ -1889,6 +1980,7 @@ func (nsc *NetworkServicesController) Cleanup() {
 	// delete dummy interface used to assign cluster IP's
 	dummyVipInterface, err := netlink.LinkByName(KUBE_DUMMY_IF)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		if err.Error() != IFACE_NOT_FOUND {
 			glog.Infof("Dummy interface: " + KUBE_DUMMY_IF + " does not exist")
 		}
@@ -1935,7 +2027,7 @@ func (nsc *NetworkServicesController) newSvcEventHandler() cache.ResourceEventHa
 
 // NewNetworkServicesController returns NetworkServicesController object
 func NewNetworkServicesController(clientset kubernetes.Interface,
-	config *options.KubeRouterConfig, svcInformer cache.SharedIndexInformer,
+	config *options.KubeRouterConfig, healthChan chan<- *healthcheck.ControllerHeartbeat, svcInformer cache.SharedIndexInformer,
 	epInformer cache.SharedIndexInformer, podInformer cache.SharedIndexInformer) (*NetworkServicesController, error) {
 
 	var err error
@@ -1981,6 +2073,7 @@ func NewNetworkServicesController(clientset kubernetes.Interface,
 	if config.RunRouter {
 		cidr, err := utils.GetPodCidrFromNodeSpec(nsc.client, config.HostnameOverride)
 		if err != nil {
+			metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 			return nil, fmt.Errorf("Failed to get pod CIDR details from Node.spec: %s", err.Error())
 		}
 		nsc.podCidr = cidr
@@ -1988,12 +2081,14 @@ func NewNetworkServicesController(clientset kubernetes.Interface,
 
 	node, err := utils.GetNodeObject(clientset, config.HostnameOverride)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return nil, err
 	}
 
 	nsc.nodeHostName = node.Name
 	NodeIP, err = utils.GetNodeIP(node)
 	if err != nil {
+		metrics.ControllerErrors.WithLabelValues("NSC").Inc()
 		return nil, err
 	}
 	nsc.nodeIP = NodeIP
