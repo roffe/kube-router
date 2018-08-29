@@ -51,7 +51,6 @@ type NetworkPolicyController struct {
 	nodeHostName    string
 	mu              sync.Mutex
 	syncPeriod      time.Duration
-	MetricsEnabled  bool
 	v1NetworkPolicy bool
 	readyForUpdates bool
 
@@ -217,9 +216,7 @@ func (npc *NetworkPolicyController) Sync() error {
 	syncVersion := strconv.FormatInt(start.UnixNano(), 10)
 	defer func() {
 		endTime := time.Since(start)
-		if npc.MetricsEnabled {
-			metrics.ControllerIptablesSyncTime.WithLabelValues().Set(float64(endTime.Seconds()))
-		}
+		metrics.ControllerIptablesSyncTime.WithLabelValues().Set(float64(endTime.Seconds()))
 		glog.V(1).Infof("sync iptables took %v", endTime)
 	}()
 
@@ -1507,7 +1504,6 @@ func NewNetworkPolicyController(clientset kubernetes.Interface,
 	if config.MetricsEnabled {
 		//Register the metrics for this controller
 		prometheus.MustRegister(metrics.ControllerIptablesSyncTime)
-		npc.MetricsEnabled = true
 	}
 
 	npc.syncPeriod = config.IPTablesSyncPeriod
