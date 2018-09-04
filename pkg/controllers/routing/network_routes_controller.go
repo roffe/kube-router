@@ -236,7 +236,9 @@ func (nrc *NetworkRoutingController) Run(stopCh <-chan struct{}, wg *sync.WaitGr
 	}
 
 	nrc.bgpServerStarted = true
-	defer nrc.bgpServer.Shutdown()
+	if !nrc.bgpGracefulRestart {
+		defer nrc.bgpServer.Shutdown()
+	}
 
 	// loop forever till notified to stop on stopCh
 	for {
